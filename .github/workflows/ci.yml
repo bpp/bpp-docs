@@ -1,0 +1,17 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev pkg-config
+      - name: Build
+        run: make
+      - name: Smoke test
+        run: |
+          ./bpp-docs --version
+          ./bpp-docs --syntax phase
+          ./bpp-docs --list | head -3
+          ./bpp-docs --json thetaprior | head -c 80; echo

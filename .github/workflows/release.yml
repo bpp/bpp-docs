@@ -1,0 +1,85 @@
+name: release
+# Push a tag v* (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to build the
+# Linux x86_64 binary, publish a GitHub Release, and bump the Homebrew formula.
+# bpp-docs links libcurl (for --update over HTTPS), so unlike the fully-static
+# bpp-seqs this is a desktop tool with a libcurl runtime dependency (ubiquitous).
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev pkg-config
+      - name: Build (embeds the latest manual)
+        run: make
+      - name: Smoke test
+        run: ./bpp-docs --version && ./bpp-docs --syntax phase && ./bpp-docs --list | head -3
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="bpp-docs-${VERSION}-linux-x86_64"
+          mkdir -p "$STAGE"
+          cp bpp-docs README.md LICENSE "$STAGE/"
+          tar -czf "${STAGE}.tar.gz" "$STAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: bpp-docs-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+  release:
+    needs: build-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Checksums
+        run: cd dist && sha256sum bpp-docs-* > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/bpp-docs-*
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+  bump-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      # Formula builds from the source tarball. HOMEBREW_TAP_TOKEN4 is a PAT with
+      # Contents:write on bpp/homebrew-tap; Formula/bpp-docs.rb must be seeded
+      # there once from packaging/bpp-docs.rb.
+      - name: Bump formula in bpp/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN4 }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+          URL="https://github.com/bpp/bpp-docs/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL -o src.tar.gz "$URL"
+          SHA="$(sha256sum src.tar.gz | awk '{print $1}')"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/bpp/homebrew-tap.git" tap
+          cd tap
+          python3 - "$URL" "$SHA" <<'PY'
+          import re, sys
+          url, sha = sys.argv[1], sys.argv[2]
+          p = "Formula/bpp-docs.rb"; s = open(p).read()
+          s = re.sub(r'^(\s*)url ".*"$', lambda m: m.group(1)+f'url "{url}"', s, count=1, flags=re.M)
+          s = re.sub(r'sha256 "[0-9a-f]{64}"', f'sha256 "{sha}"', s, count=1)
+          open(p, "w").write(s)
+          PY
+          git config user.name  "bpp-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git diff --quiet && { echo "already current"; exit 0; }
+          git commit -am "bpp-docs ${VER}"
+          git push origin HEAD:main
