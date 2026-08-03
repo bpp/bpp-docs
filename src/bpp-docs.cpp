@@ -172,26 +172,54 @@ static const Section *find_keyword(const std::vector<Section> &secs, const std::
     return nullptr;
 }
 
-static int cmd_keyword(const std::vector<Section> &secs, const std::string &kw, bool json)
+// Best-scoring section for a free-text query (same scoring as --search).
+static const Section *top_search(const std::vector<Section> &secs, const std::string &query)
 {
-    const Section *s = find_keyword(secs, kw);
+    std::vector<std::string> terms;
+    { std::istringstream is(lower(query)); std::string t; while (is >> t) terms.push_back(t); }
+    const Section *best = nullptr; int best_score = 0;
+    for (const auto &s : secs) {
+        std::string ht = lower(s.title), bt = lower(s.body);
+        int score = 0;
+        for (const auto &t : terms) {
+            if (ht.find(t) != std::string::npos) score += 6;
+            size_t p = 0; while ((p = bt.find(t, p)) != std::string::npos) { score += 1; p += t.size(); }
+        }
+        if (score > best_score) { best_score = score; best = &s; }
+    }
+    return best;
+}
+
+// `bpp-docs <query>`: a control-variable name gives the structured reference;
+// anything else falls back to the best-matching section. Always returns the
+// full section text, so it works as a one-shot "answer this from the manual"
+// (which is exactly what bpp-agent needs).
+static int cmd_keyword(const std::vector<Section> &secs, const std::string &q, bool json)
+{
+    const Section *s = find_keyword(secs, q);
+    bool is_var = (s != nullptr);
+    if (!s) s = top_search(secs, q);
     if (!s) {
-        if (json) printf("{\"keyword\":\"%s\",\"found\":false}\n", jesc(kw).c_str());
-        else fprintf(stderr, "bpp-docs: no control variable '%s' in the manual (try: bpp-docs -l)\n", kw.c_str());
+        if (json) printf("{\"query\":\"%s\",\"found\":false}\n", jesc(q).c_str());
+        else fprintf(stderr, "bpp-docs: nothing in the manual matches '%s' (try: bpp-docs -l)\n", q.c_str());
         return 1;
     }
+    std::string text = render(s->body);
     if (json) {
-        printf("{\"keyword\":\"%s\",\"found\":true,\"heading\":\"%s\","
-               "\"syntax\":\"%s\",\"description\":\"%s\",\"values\":\"%s\","
-               "\"default\":\"%s\",\"dependencies\":\"%s\",\"comments\":\"%s\"}\n",
-               jesc(s->keyword).c_str(), jesc(s->title).c_str(),
-               jesc(syntax_of(s->body)).c_str(), jesc(field(s->body, "DESCRIPTION")).c_str(),
-               jesc(field(s->body, "VALUES")).c_str(), jesc(field(s->body, "DEFAULT")).c_str(),
-               jesc(field(s->body, "DEPENDENCIES")).c_str(), jesc(field(s->body, "COMMENTS")).c_str());
+        printf("{\"query\":\"%s\",\"found\":true,\"heading\":\"%s\",\"matched_by\":\"%s\",",
+               jesc(q).c_str(), jesc(s->title).c_str(), is_var ? "keyword" : "search");
+        if (is_var)
+            printf("\"keyword\":\"%s\",\"syntax\":\"%s\",\"description\":\"%s\",\"values\":\"%s\","
+                   "\"default\":\"%s\",\"dependencies\":\"%s\",\"comments\":\"%s\",",
+                   jesc(s->keyword).c_str(), jesc(syntax_of(s->body)).c_str(),
+                   jesc(field(s->body, "DESCRIPTION")).c_str(), jesc(field(s->body, "VALUES")).c_str(),
+                   jesc(field(s->body, "DEFAULT")).c_str(), jesc(field(s->body, "DEPENDENCIES")).c_str(),
+                   jesc(field(s->body, "COMMENTS")).c_str());
+        printf("\"text\":\"%s\"}\n", jesc(text).c_str());
     } else {
         if (g_tty) printf("\033[1;36m%s\033[0m\n", s->title.c_str());
         else printf("%s\n", s->title.c_str());
-        printf("%s\n", render(s->body).c_str());
+        printf("%s\n", text.c_str());
     }
     return 0;
 }
