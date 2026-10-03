@@ -26,6 +26,11 @@ invented. If a query matches nothing, `bpp-docs` says so rather than guessing.
 
 ## Install
 
+Prebuilt binaries for Linux x86_64 (static, runs on any distribution) and
+macOS (Apple Silicon and Intel) are on the
+[releases page](https://github.com/bpp/bpp-docs/releases): unpack and put
+`bpp-docs` on your PATH.
+
 Homebrew (macOS / Linux):
 
 ```console
@@ -38,6 +43,10 @@ From source (needs a C++17 compiler and libcurl):
 make            # fetches the latest manual, embeds it, links libcurl
 ./bpp-docs --version
 ```
+
+Without libcurl, `make NO_CURL=1` builds a binary whose `--update` runs the
+`curl` command instead; add `STATIC=1` for a fully static binary (this is how
+the Linux release is built).
 
 `make` embeds the newest manual at build time; if there's no network it falls
 back to the vendored copy in `vendor/`, so the build never breaks.

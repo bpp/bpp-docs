@@ -1,40 +1,80 @@
 name: release
 # Push a tag v* (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to build the
-# Linux x86_64 binary, publish a GitHub Release, and bump the Homebrew formula.
-# bpp-docs links libcurl (for --update over HTTPS), so unlike the fully-static
-# bpp-seqs this is a desktop tool with a libcurl runtime dependency (ubiquitous).
+# release binaries, publish a GitHub Release, and bump the Homebrew formula.
+#
+# - linux-x86_64: fully static, built with NO_CURL=1 (libcurl's TLS stack does
+#   not link statically in a portable way); --update runs the curl command.
+#   Runs on any glibc or musl distribution, including older HPC systems.
+# - macos-arm64 / macos-x86_64: linked against the system libcurl in /usr/lib
+#   only (never Homebrew's), so they run on a stock Mac.
+# Run it by hand (Actions > release > Run workflow) to test the builds without
+# publishing anything; only a tag push publishes.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-latest
+            make_args: NO_CURL=1 STATIC=1
+          - target: macos-arm64
+            os: macos-latest
+            make_args: CURL_CFLAGS= CURL_LIBS=-lcurl
+          - target: macos-x86_64
+            os: macos-latest       # cross-compile on Apple Silicon
+            make_args: CURL_CFLAGS= CURL_LIBS=-lcurl EXTRA_CFLAGS="-arch x86_64" EXTRA_LDFLAGS="-arch x86_64"
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
-      - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev pkg-config
       - name: Build (embeds the latest manual)
-        run: make
+        run: make ${{ matrix.make_args }}
+      - name: Check linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          file bpp-docs
+          case "${{ matrix.target }}" in
+            linux-*)
+              file bpp-docs | grep -q "statically linked" ;;
+            macos-*)
+              ARCH="${{ matrix.target }}"; ARCH="${ARCH#macos-}"
+              file bpp-docs | grep -q "$ARCH"
+              otool -L bpp-docs
+              if otool -L bpp-docs | tail -n +2 | grep -v -E '^\s+(/usr/lib/|/System/)'; then
+                echo "linked against a library that a stock Mac does not have" >&2
+                exit 1
+              fi ;;
+          esac
       - name: Smoke test
-        run: ./bpp-docs --version && ./bpp-docs --syntax phase && ./bpp-docs --list | head -3
+        if: matrix.target != 'macos-x86_64'
+        run: ./bpp-docs --version && ./bpp-docs --syntax phase && ./bpp-docs --list | head -3 && ./bpp-docs --json thetaprior | head -c 80
       - name: Stage artifact
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          STAGE="bpp-docs-${VERSION}-linux-x86_64"
+          STAGE="bpp-docs-${VERSION}-${{ matrix.target }}"
           mkdir -p "$STAGE"
           cp bpp-docs README.md LICENSE "$STAGE/"
           tar -czf "${STAGE}.tar.gz" "$STAGE"
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-x86_64
-          path: bpp-docs-*-linux-x86_64.tar.gz
+          name: ${{ matrix.target }}
+          path: bpp-docs-*-${{ matrix.target }}.tar.gz
           if-no-files-found: error
   release:
-    needs: build-linux
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

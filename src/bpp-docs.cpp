@@ -9,7 +9,8 @@
 //   bpp-docs -s | --search Q  ranked full-text search of the manual
 //   bpp-docs --syntax <kw>    just the syntax line + default (scriptable)
 //   bpp-docs --json …         machine-readable output of any of the above
-//   bpp-docs --update         fetch the latest manual (built-in libcurl)
+//   bpp-docs --update         fetch the latest manual (libcurl, or the curl
+//                             command in BPP_DOCS_NO_CURL builds)
 //   bpp-docs --version        tool + embedded/cached manual versions
 //
 // The manual is embedded at build time (self-contained, offline). --update
@@ -24,10 +25,13 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
+#ifndef BPP_DOCS_NO_CURL
 #include <curl/curl.h>
+#endif
 #include "manual_embed.h"   // BPP_MANUAL_MD, MANUAL_FETCH_DATE
 
 #define BPP_DOCS_VERSION "0.1.0"
@@ -290,15 +294,34 @@ static int cmd_syntax(const std::vector<Section> &secs, const std::string &kw)
     return 0;
 }
 
-// ─── --update via libcurl ────────────────────────────────────────────────────
+// ─── --update via libcurl (or the curl command in static builds) ─────────────
+#ifdef BPP_DOCS_NO_CURL
+// Static release builds leave out libcurl (its TLS stack can't be linked
+// statically in a portable way) and run the system `curl` command instead.
+static bool fetch_manual(std::string &body)
+{
+    FILE *f = popen("curl -fsSL --max-time 30 -A bpp-docs/" BPP_DOCS_VERSION " '" MANUAL_URL "'", "r");
+    if (!f) { fprintf(stderr, "bpp-docs: cannot run curl\n"); return false; }
+    char buf[1 << 16];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) body.append(buf, n);
+    int st = pclose(f);
+    if (st != 0 || body.size() < 1000) {
+        fprintf(stderr, "bpp-docs: update failed (the curl command %s)\n",
+                WIFEXITED(st) && WEXITSTATUS(st) == 127 ? "was not found; install curl" : "could not fetch the manual");
+        return false;
+    }
+    return true;
+}
+#else
 static size_t write_cb(char *ptr, size_t sz, size_t n, void *ud)
 { ((std::string *)ud)->append(ptr, sz * n); return sz * n; }
 
-static int cmd_update()
+static bool fetch_manual(std::string &body)
 {
-    std::string body, err(CURL_ERROR_SIZE, 0);
+    std::string err(CURL_ERROR_SIZE, 0);
     CURL *c = curl_easy_init();
-    if (!c) { fprintf(stderr, "bpp-docs: curl init failed\n"); return 1; }
+    if (!c) { fprintf(stderr, "bpp-docs: curl init failed\n"); return false; }
     curl_easy_setopt(c, CURLOPT_URL, MANUAL_URL);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
@@ -312,8 +335,16 @@ static int cmd_update()
     if (rc != CURLE_OK || http != 200 || body.size() < 1000) {
         fprintf(stderr, "bpp-docs: update failed (%s, HTTP %ld)\n",
                 rc == CURLE_OK ? "bad response" : curl_easy_strerror(rc), http);
-        return 1;
+        return false;
     }
+    return true;
+}
+#endif
+
+static int cmd_update()
+{
+    std::string body;
+    if (!fetch_manual(body)) return 1;
     std::string prev; read_file(cache_path(), prev);
     std::string dir = cache_path().substr(0, cache_path().find_last_of('/'));
     std::string mk = "mkdir -p '" + dir + "'"; if (system(mk.c_str()) != 0) {}

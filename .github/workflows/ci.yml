@@ -15,3 +15,8 @@ jobs:
           ./bpp-docs --syntax phase
           ./bpp-docs --list | head -3
           ./bpp-docs --json thetaprior | head -c 80; echo
+      - name: Build static, without libcurl (as the Linux release does)
+        run: |
+          make clean && make NO_CURL=1 STATIC=1
+          file bpp-docs | grep -q "statically linked"
+          ./bpp-docs --version && ./bpp-docs --syntax phase

@@ -7,8 +7,18 @@ CXX      ?= c++
 CXXFLAGS ?= -O2 -std=c++17 -Wall -Wextra
 MANUAL_URL := https://raw.githubusercontent.com/bpp/bpp-manual/main/bpp-4-manual.md
 
+# `make NO_CURL=1` builds without libcurl; --update then runs the curl command.
+# The Linux release uses `make NO_CURL=1 STATIC=1` for a fully static binary.
+ifeq ($(NO_CURL),1)
+CURL_CFLAGS := -DBPP_DOCS_NO_CURL
+CURL_LIBS   :=
+else
 CURL_CFLAGS := $(shell pkg-config --cflags libcurl 2>/dev/null)
 CURL_LIBS   := $(shell pkg-config --libs libcurl 2>/dev/null || echo -lcurl)
+endif
+ifeq ($(STATIC),1)
+EXTRA_LDFLAGS += -static
+endif
 EXTRA_CFLAGS ?=
 EXTRA_LDFLAGS ?=
 
